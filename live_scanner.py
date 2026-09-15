@@ -7,9 +7,6 @@ import pandas_ta as ta
 from datetime import datetime
 import base64
 
-# =========================================================
-#  TWILIO CONFIGURATION (GitHub Secrets se uthaye ga)
-# =========================================================
 TWILIO_ACCOUNT_SID = os.environ.get("TWILIO_ACCOUNT_SID")
 TWILIO_AUTH_TOKEN = os.environ.get("TWILIO_AUTH_TOKEN")
 TWILIO_WHATSAPP_NUMBER = os.environ.get("TWILIO_WHATSAPP_NUMBER", "whatsapp:+14155238886")
@@ -19,7 +16,7 @@ PAIRS = ['BTCUSDT', 'ETHUSDT', 'XRPUSDT', 'XAUUSDT', 'LINKUSDT']
 
 def send_whatsapp_alert(message):
     if not TWILIO_ACCOUNT_SID or not TWILIO_AUTH_TOKEN:
-        print("⚠️ Twilio credentials missing in environment variables!")
+        print("⚠️ Twilio credentials missing!")
         return
 
     url = f"https://api.twilio.com/2010-04-01/Accounts/{TWILIO_ACCOUNT_SID}/Messages.json"
@@ -40,7 +37,7 @@ def send_whatsapp_alert(message):
     
     try:
         with urllib.request.urlopen(req) as response:
-            print("📲 WhatsApp alert sent successfully!")
+            print("📲 WhatsApp summary sent successfully!")
     except Exception as e:
         print(f"❌ WhatsApp Error: {e}")
 
@@ -80,12 +77,12 @@ def check_live_signals():
     now_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
     print(f"\n[{now_str}] --- SCANNING TOP 5 ASSETS (1H CANDLES) ---")
     
-    signals_found = 0
+    report_message = f"📊 Hourly Scan Report\nTime: {now_str}\n\n"
 
     for symbol in PAIRS:
         try:
             df = fetch_recent_1h_data(symbol)
-            i = len(df) - 2  # Last completed 1H candle
+            i = len(df) - 2  
             
             coin_name = symbol.replace('USDT', '')
             close = df.loc[i, 'close']
@@ -107,19 +104,8 @@ def check_live_signals():
                 if (prev_rsi <= 42) and (rsi > 42) and (vol >= 0.85 * vol_ma):
                     sl = close - (1.4 * atr)
                     tp = close + (3.5 * atr)
-                    signals_found += 1
-                    
-                    alert_msg = (
-                        f"🚀 BUY SIGNAL DETECTED!\n\n"
-                        f"Asset: #{coin_name}/USDT\n"
-                        f"Entry Price: ${close:,.4f}\n"
-                        f"Stop Loss (SL): ${sl:,.4f}\n"
-                        f"Take Profit (TP): ${tp:,.4f}\n"
-                        f"Risk/Reward: 1 : 2.5\n\n"
-                        f"Time: {now_str}"
-                    )
+                    report_message += f"🟢 #{coin_name}: BUY SIGNAL! (${close:,.2f})\n"
                     print(f"🔥 [BUY SIGNAL] {symbol} @ ${close:,.4f}")
-                    send_whatsapp_alert(alert_msg)
                     continue
 
             # SELL SIGNAL
@@ -127,27 +113,20 @@ def check_live_signals():
                 if (prev_rsi >= 58) and (rsi < 58) and (vol >= 0.85 * vol_ma):
                     sl = close + (1.4 * atr)
                     tp = close - (3.5 * atr)
-                    signals_found += 1
-                    
-                    alert_msg = (
-                        f"🔻 SELL / SHORT SIGNAL DETECTED!\n\n"
-                        f"Asset: #{coin_name}/USDT\n"
-                        f"Entry Price: ${close:,.4f}\n"
-                        f"Stop Loss (SL): ${sl:,.4f}\n"
-                        f"Take Profit (TP): ${tp:,.4f}\n"
-                        f"Risk/Reward: 1 : 2.5\n\n"
-                        f"Time: {now_str}"
-                    )
+                    report_message += f"🔴 #{coin_name}: SELL SIGNAL! (${close:,.2f})\n"
                     print(f"🔻 [SELL SIGNAL] {symbol} @ ${close:,.4f}")
-                    send_whatsapp_alert(alert_msg)
                     continue
 
+            # NO SIGNAL
+            report_message += f"⚪ #{coin_name}: No Signal (${close:,.2f})\n"
             print(f"[{coin_name}] Status: No Signal | Price: ${close:,.2f}")
+
         except Exception as e:
             print(f"⚠️ Error checking {symbol}: {e}")
+            report_message += f"⚠️ #{symbol.replace('USDT','')}: Error\n"
 
-    if signals_found == 0:
-        print("✅ Scan complete: All 5 assets checked. No active signal.")
+    # Send 1 single summary report to WhatsApp every hour
+    send_whatsapp_alert(report_message)
 
 if __name__ == "__main__":
     check_live_signals()

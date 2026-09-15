@@ -1,160 +1,139 @@
 import os
 import pandas as pd
 import pandas_ta as ta
-from datetime import datetime
-import urllib.request
-import urllib.parse
-import base64
 import yfinance as yf
+from twilio.rest import Client
 
-# =========================================================
-#  TWILIO CONFIGURATION
-# =========================================================
-TWILIO_ACCOUNT_SID = os.environ.get("TWILIO_ACCOUNT_SID")
-TWILIO_AUTH_TOKEN = os.environ.get("TWILIO_AUTH_TOKEN")
-TWILIO_WHATSAPP_NUMBER = os.environ.get("TWILIO_WHATSAPP_NUMBER", "whatsapp:+14155238886")
-USER_WHATSAPP_NUMBER = os.environ.get("USER_WHATSAPP_NUMBER")
-
-# Yahoo Finance Tickers (Gold ke liye alternative ticker try karenge agar pehla fail ho)
+# Top 5 Assets
 ASSETS = {
     'BTC': 'BTC-USD',
     'ETH': 'ETH-USD',
     'XRP': 'XRP-USD',
-    'XAUUSD': 'GC=F',  # Gold Futures ticker on Yahoo Finance works more reliably
+    'XAUUSD': 'GC=F',
     'LINK': 'LINK-USD'
 }
 
+# Twilio Credentials from GitHub Secrets / Environment Variables
+TWILIO_ACCOUNT_SID = os.getenv('TWILIO_ACCOUNT_SID')
+TWILIO_AUTH_TOKEN = os.getenv('TWILIO_AUTH_TOKEN')
+TWILIO_WHATSAPP_FROM = os.getenv('TWILIO_WHATSAPP_FROM', 'whatsapp:+14155238886')
+USER_WHATSAPP_TO = os.getenv('USER_WHATSAPP_TO')
+
 def send_whatsapp_alert(message):
-    if not TWILIO_ACCOUNT_SID or not TWILIO_AUTH_TOKEN:
-        print("⚠️ Twilio credentials missing!")
-        return
+    print(f"\n📢 SIGNAL ALERT:\n{message}\n")
+    if TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN and USER_WHATSAPP_TO:
+        try:
+            client = Client(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
+            client.messages.create(
+                body=message,
+                from_=TWILIO_WHATSAPP_FROM,
+                to=USER_WHATSAPP_TO
+            )
+            print("✅ WhatsApp Alert Sent Successfully!")
+        except Exception as e:
+            print(f"⚠️ Failed to send WhatsApp alert: {e}")
+    else:
+        print("ℹ️ Twilio credentials not found. Running in local print-only mode.")
 
-    url = f"https://api.twilio.com/2010-04-01/Accounts/{TWILIO_ACCOUNT_SID}/Messages.json"
-    data = urllib.parse.urlencode({
-        'From': TWILIO_WHATSAPP_NUMBER,
-        'To': USER_WHATSAPP_NUMBER,
-        'Body': message
-    }).encode('utf-8')
-    
-    auth_string = f"{TWILIO_ACCOUNT_SID}:{TWILIO_AUTH_TOKEN}"
-    auth_header = "Basic " + base64.b64encode(auth_string.encode('ascii')).decode('ascii')
-    
-    req = urllib.request.Request(url, data=data, headers={
-        'Authorization': auth_header,
-        'Content-Type': 'application/x-www-form-urlencoded',
-        'User-Agent': 'Mozilla/5.0'
-    })
-    
-    try:
-        with urllib.request.urlopen(req) as response:
-            print("📲 WhatsApp summary sent successfully!")
-    except Exception as e:
-        print(f"❌ WhatsApp Error: {e}")
+def scan_markets():
+    print("=" * 60)
+    print("🚀 RUNNING LIVE SMART MOMENTUM SCANNER (15m)")
+    print("=" * 60)
 
-def fetch_1h_data(ticker):
-    """ Fetches 1H candles using Yahoo Finance with multi-index handling """
-    df = yf.download(ticker, period="60d", interval="1h", progress=False)
-    if df.empty:
-        raise ValueError(f"No data fetched for {ticker}")
-    
-    # Flatten multi-index columns if present
-    if isinstance(df.columns, pd.MultiIndex):
-        df.columns = df.columns.get_level_values(0)
-        
-    df = df.reset_index()
-    
-    # Standardize column names dynamically
-    df.columns = [str(col).lower() for col in df.columns]
-    
-    # Rename matching columns safely
-    rename_dict = {}
-    for col in df.columns:
-        if 'date' in col or 'time' in col:
-            rename_dict[col] = 'open_time'
-        elif 'open' in col:
-            rename_dict[col] = 'open'
-        elif 'high' in col:
-            rename_dict[col] = 'high'
-        elif 'low' in col:
-            rename_dict[col] = 'low'
-        elif 'close' in col:
-            rename_dict[col] = 'close'
-        elif 'volume' in col:
-            rename_dict[col] = 'volume'
-            
-    df = df.rename(columns=rename_dict)
-    
-    # Ensure necessary columns exist
-    required_cols = ['open_time', 'open', 'high', 'low', 'close', 'volume']
-    for rc in required_cols:
-        if rc not in df.columns:
-            raise ValueError(f"Missing column {rc} in data for {ticker}")
-            
-    df = df[required_cols]
-    
-    for col in ['open', 'high', 'low', 'close', 'volume']:
-        df[col] = pd.to_numeric(df[col], errors='coerce')
-        
-    df = df.dropna()
-        
-    df['EMA_20'] = ta.ema(df['close'], length=20)
-    df['EMA_50'] = ta.ema(df['close'], length=50)
-    df['EMA_200'] = ta.ema(df['close'], length=200)
-    df['RSI_14'] = ta.rsi(df['close'], length=14)
-    adx_df = ta.adx(df['high'], df['low'], df['close'], length=14)
-    df['ADX_14'] = adx_df['ADX_14'] if adx_df is not None and 'ADX_14' in adx_df.columns else 25.0
-    df['ATR_14'] = ta.atr(df['high'], df['low'], df['close'], length=14)
-    df['Vol_MA'] = ta.sma(df['volume'], length=20)
-    return df
-
-def check_live_signals():
-    now_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-    print(f"\n[{now_str}] --- SCANNING TOP 5 ASSETS (YAHOO FINANCE) ---")
-    
-    report_message = f"📊 Hourly Scan Report\nTime: {now_str}\n\n"
+    signals_found = 0
 
     for coin_name, ticker in ASSETS.items():
         try:
-            df = fetch_1h_data(ticker)
-            i = len(df) - 2  # Last completed 1H candle
+            # Fetch recent data to calculate indicators
+            df = yf.download(ticker, period="5d", interval="15m", progress=False)
+            if df.empty:
+                print(f"⚠️ No data fetched for {coin_name}")
+                continue
             
+            if isinstance(df.columns, pd.MultiIndex):
+                df.columns = df.columns.get_level_values(0)
+                
+            df = df.reset_index()
+            df.columns = [str(col).lower() for col in df.columns]
+            
+            rename_dict = {}
+            for col in df.columns:
+                if 'date' in col or 'time' in col:
+                    rename_dict[col] = 'open_time'
+                elif 'open' in col:
+                    rename_dict[col] = 'open'
+                elif 'high' in col:
+                    rename_dict[col] = 'high'
+                elif 'low' in col:
+                    rename_dict[col] = 'low'
+                elif 'close' in col:
+                    rename_dict[col] = 'close'
+                elif 'volume' in col:
+                    rename_dict[col] = 'volume'
+            df = df.rename(columns=rename_dict)
+            
+            for col in ['open', 'high', 'low', 'close', 'volume']:
+                df[col] = pd.to_numeric(df[col], errors='coerce')
+            df = df.dropna()
+
+            # Indicators Calculation
+            df['EMA_9'] = ta.ema(df['close'], length=9)
+            df['EMA_21'] = ta.ema(df['close'], length=21)
+            df['EMA_50'] = ta.ema(df['close'], length=50)
+            df['RSI_14'] = ta.rsi(df['close'], length=14)
+            df['ATR_14'] = ta.atr(df['high'], df['low'], df['close'], length=14)
+            df['Vol_MA'] = ta.sma(df['volume'], length=20)
+            df = df.dropna().reset_index(drop=True)
+
+            # Check the latest completed candle (Index -2 or -1 depending on execution, let's check index len-2)
+            i = len(df) - 2
             close = df.loc[i, 'close']
-            ema_20, ema_50, prev_ema_50 = df.loc[i, 'EMA_20'], df.loc[i, 'EMA_50'], df.loc[i-1, 'EMA_50']
-            ema_200 = df.loc[i, 'EMA_200']
-            rsi, prev_rsi = df.loc[i, 'RSI_14'], df.loc[i-1, 'RSI_14']
-            adx, atr = df.loc[i, 'ADX_14'], df.loc[i, 'ATR_14']
-            vol, vol_ma = df.loc[i, 'volume'], df.loc[i, 'Vol_MA']
-            
-            if coin_name in ['BTC', 'ETH', 'XRP']:
-                min_adx = 18
-            elif coin_name == 'XAUUSD':
-                min_adx = 24
+            ema_9, prev_ema_9 = df.loc[i, 'EMA_9'], df.loc[i-1, 'EMA_9']
+            ema_21, prev_ema_21 = df.loc[i, 'EMA_21'], df.loc[i-1, 'EMA_21']
+            ema_50 = df.loc[i, 'EMA_50']
+            rsi = df.loc[i, 'RSI_14']
+            atr = df.loc[i, 'ATR_14']
+            vol = df.loc[i, 'volume']
+            vol_ma = df.loc[i, 'Vol_MA']
+
+            is_bullish_cross = (prev_ema_9 <= prev_ema_21) and (ema_9 > ema_21)
+            is_bearish_cross = (prev_ema_9 >= prev_ema_21) and (ema_9 < ema_21)
+
+            signal_type = None
+            if is_bullish_cross and (close > ema_50) and (rsi > 48) and (vol >= 0.8 * vol_ma):
+                signal_type = 'BUY'
+            elif is_bearish_cross and (close < ema_50) and (rsi < 52) and (vol >= 0.8 * vol_ma):
+                signal_type = 'SELL'
+
+            if signal_type:
+                signals_found += 1
+                initial_sl_distance = 2.0 * atr
+                if signal_type == 'BUY':
+                    sl = close - initial_sl_distance
+                    tp_suggestion = close + (3.0 * atr)
+                else:
+                    sl = close + initial_sl_distance
+                    tp_suggestion = close - (3.0 * atr)
+
+                msg = (
+                    f"🚨 *{signal_type} SIGNAL DETECTED* 🚨\n"
+                    f"🪙 Asset: *{coin_name}*\n"
+                    f"💲 Entry Price: `{close:.4f}`\n"
+                    f"🛑 Initial SL: `{sl:.4f}`\n"
+                    f"🎯 Target Zone: `{tp_suggestion:.4f}`\n"
+                    f"📊 RSI: `{rsi:.1f}` | ATR: `{atr:.4f}`\n"
+                    f"⚡ Strategy: Smart Momentum Trailing"
+                )
+                send_whatsapp_alert(msg)
             else:
-                min_adx = 22
-
-            # BUY SIGNAL
-            if (ema_20 > ema_50) and (ema_50 > prev_ema_50) and (close > ema_200) and (adx > min_adx):
-                if (prev_rsi <= 42) and (rsi > 42) and (vol >= 0.85 * vol_ma):
-                    report_message += f"🟢 #{coin_name}: BUY SIGNAL! (${close:,.2f})\n"
-                    print(f"🔥 [BUY SIGNAL] {coin_name} @ ${close:,.4f}")
-                    continue
-
-            # SELL SIGNAL
-            if (ema_20 < ema_50) and (ema_50 < prev_ema_50) and (close < ema_200) and (adx > min_adx):
-                if (prev_rsi >= 58) and (rsi < 58) and (vol >= 0.85 * vol_ma):
-                    report_message += f"🔴 #{coin_name}: SELL SIGNAL! (${close:,.2f})\n"
-                    print(f"🔻 [SELL SIGNAL] {coin_name} @ ${close:,.4f}")
-                    continue
-
-            # NO SIGNAL
-            report_message += f"⚪ #{coin_name}: No Signal (${close:,.2f})\n"
-            print(f"[{coin_name}] Status: No Signal | Price: ${close:,.2f}")
+                print(f"🔍 Asset: {coin_name:<6} | Status: No active signal on latest candle.")
 
         except Exception as e:
-            print(f"⚠️ Error checking {coin_name}: {e}")
-            report_message += f"⚠️ #{coin_name}: Error\n"
+            print(f"⚠️ Error scanning {coin_name}: {e}")
 
-    send_whatsapp_alert(report_message)
+    print("-" * 60)
+    print(f"🏁 Scan Complete. Total Signals Generated: {signals_found}")
+    print("=" * 60)
 
 if __name__ == "__main__":
-    check_live_signals()
+    scan_markets()

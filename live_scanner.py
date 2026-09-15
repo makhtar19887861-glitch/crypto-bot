@@ -15,12 +15,12 @@ TWILIO_AUTH_TOKEN = os.environ.get("TWILIO_AUTH_TOKEN")
 TWILIO_WHATSAPP_NUMBER = os.environ.get("TWILIO_WHATSAPP_NUMBER", "whatsapp:+14155238886")
 USER_WHATSAPP_NUMBER = os.environ.get("USER_WHATSAPP_NUMBER")
 
-# Yahoo Finance Tickers for Top 5 Assets
+# Yahoo Finance Tickers (Gold ke liye alternative ticker try karenge agar pehla fail ho)
 ASSETS = {
     'BTC': 'BTC-USD',
     'ETH': 'ETH-USD',
     'XRP': 'XRP-USD',
-    'XAUUSD': 'XAUUSD=X',
+    'XAUUSD': 'GC=F',  # Gold Futures ticker on Yahoo Finance works more reliably
     'LINK': 'LINK-USD'
 }
 
@@ -52,24 +52,50 @@ def send_whatsapp_alert(message):
         print(f"❌ WhatsApp Error: {e}")
 
 def fetch_1h_data(ticker):
-    """ Fetches 1H candles using Yahoo Finance """
+    """ Fetches 1H candles using Yahoo Finance with multi-index handling """
     df = yf.download(ticker, period="60d", interval="1h", progress=False)
     if df.empty:
         raise ValueError(f"No data fetched for {ticker}")
     
-    # Flatten multi-index columns if yfinance returns them
+    # Flatten multi-index columns if present
     if isinstance(df.columns, pd.MultiIndex):
         df.columns = df.columns.get_level_values(0)
         
     df = df.reset_index()
-    # Standardize column names
-    df = df.rename(columns={
-        'Datetime': 'open_time', 'Date': 'open_time',
-        'Open': 'open', 'High': 'high', 'Low': 'low', 'Close': 'close', 'Volume': 'volume'
-    })
+    
+    # Standardize column names dynamically
+    df.columns = [str(col).lower() for col in df.columns]
+    
+    # Rename matching columns safely
+    rename_dict = {}
+    for col in df.columns:
+        if 'date' in col or 'time' in col:
+            rename_dict[col] = 'open_time'
+        elif 'open' in col:
+            rename_dict[col] = 'open'
+        elif 'high' in col:
+            rename_dict[col] = 'high'
+        elif 'low' in col:
+            rename_dict[col] = 'low'
+        elif 'close' in col:
+            rename_dict[col] = 'close'
+        elif 'volume' in col:
+            rename_dict[col] = 'volume'
+            
+    df = df.rename(columns=rename_dict)
+    
+    # Ensure necessary columns exist
+    required_cols = ['open_time', 'open', 'high', 'low', 'close', 'volume']
+    for rc in required_cols:
+        if rc not in df.columns:
+            raise ValueError(f"Missing column {rc} in data for {ticker}")
+            
+    df = df[required_cols]
     
     for col in ['open', 'high', 'low', 'close', 'volume']:
-        df[col] = df[col].astype(float)
+        df[col] = pd.to_numeric(df[col], errors='coerce')
+        
+    df = df.dropna()
         
     df['EMA_20'] = ta.ema(df['close'], length=20)
     df['EMA_50'] = ta.ema(df['close'], length=50)

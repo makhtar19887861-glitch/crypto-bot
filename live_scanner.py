@@ -1,18 +1,28 @@
-import urllib.request
-import urllib.parse
-import json
 import os
 import pandas as pd
 import pandas_ta as ta
 from datetime import datetime
+import urllib.request
+import urllib.parse
 import base64
+import yfinance as yf
 
+# =========================================================
+#  TWILIO CONFIGURATION
+# =========================================================
 TWILIO_ACCOUNT_SID = os.environ.get("TWILIO_ACCOUNT_SID")
 TWILIO_AUTH_TOKEN = os.environ.get("TWILIO_AUTH_TOKEN")
 TWILIO_WHATSAPP_NUMBER = os.environ.get("TWILIO_WHATSAPP_NUMBER", "whatsapp:+14155238886")
 USER_WHATSAPP_NUMBER = os.environ.get("USER_WHATSAPP_NUMBER")
 
-PAIRS = ['BTCUSDT', 'ETHUSDT', 'XRPUSDT', 'XAUUSDT', 'LINKUSDT']
+# Yahoo Finance Tickers for Top 5 Assets
+ASSETS = {
+    'BTC': 'BTC-USD',
+    'ETH': 'ETH-USD',
+    'XRP': 'XRP-USD',
+    'XAUUSD': 'XAUUSD=X',
+    'LINK': 'LINK-USD'
+}
 
 def send_whatsapp_alert(message):
     if not TWILIO_ACCOUNT_SID or not TWILIO_AUTH_TOKEN:
@@ -41,25 +51,23 @@ def send_whatsapp_alert(message):
     except Exception as e:
         print(f"❌ WhatsApp Error: {e}")
 
-def fetch_recent_1h_data(symbol):
-    url = f"https://fapi.binance.com/fapi/v1/klines?symbol={symbol}&interval=1h&limit=250"
-    req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+def fetch_1h_data(ticker):
+    """ Fetches 1H candles using Yahoo Finance """
+    df = yf.download(ticker, period="60d", interval="1h", progress=False)
+    if df.empty:
+        raise ValueError(f"No data fetched for {ticker}")
     
-    try:
-        with urllib.request.urlopen(req) as response:
-            data = json.loads(response.read().decode('utf-8'))
-    except Exception:
-        url = f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval=1h&limit=250"
-        req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
-        with urllib.request.urlopen(req) as response:
-            data = json.loads(response.read().decode('utf-8'))
+    # Flatten multi-index columns if yfinance returns them
+    if isinstance(df.columns, pd.MultiIndex):
+        df.columns = df.columns.get_level_values(0)
         
-    df = pd.DataFrame(data, columns=[
-        'open_time', 'open', 'high', 'low', 'close', 'volume',
-        'close_time', 'qav', 'num_trades', 'tb_base', 'tb_quote', 'ignore'
-    ])
-    df = df[['open_time', 'open', 'high', 'low', 'close', 'volume']]
-    df['open_time'] = pd.to_datetime(df['open_time'], unit='ms')
+    df = df.reset_index()
+    # Standardize column names
+    df = df.rename(columns={
+        'Datetime': 'open_time', 'Date': 'open_time',
+        'Open': 'open', 'High': 'high', 'Low': 'low', 'Close': 'close', 'Volume': 'volume'
+    })
+    
     for col in ['open', 'high', 'low', 'close', 'volume']:
         df[col] = df[col].astype(float)
         
@@ -75,16 +83,15 @@ def fetch_recent_1h_data(symbol):
 
 def check_live_signals():
     now_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-    print(f"\n[{now_str}] --- SCANNING TOP 5 ASSETS (1H CANDLES) ---")
+    print(f"\n[{now_str}] --- SCANNING TOP 5 ASSETS (YAHOO FINANCE) ---")
     
     report_message = f"📊 Hourly Scan Report\nTime: {now_str}\n\n"
 
-    for symbol in PAIRS:
+    for coin_name, ticker in ASSETS.items():
         try:
-            df = fetch_recent_1h_data(symbol)
-            i = len(df) - 2  
+            df = fetch_1h_data(ticker)
+            i = len(df) - 2  # Last completed 1H candle
             
-            coin_name = symbol.replace('USDT', '')
             close = df.loc[i, 'close']
             ema_20, ema_50, prev_ema_50 = df.loc[i, 'EMA_20'], df.loc[i, 'EMA_50'], df.loc[i-1, 'EMA_50']
             ema_200 = df.loc[i, 'EMA_200']
@@ -92,9 +99,9 @@ def check_live_signals():
             adx, atr = df.loc[i, 'ADX_14'], df.loc[i, 'ATR_14']
             vol, vol_ma = df.loc[i, 'volume'], df.loc[i, 'Vol_MA']
             
-            if symbol in ['BTCUSDT', 'ETHUSDT', 'XRPUSDT']:
+            if coin_name in ['BTC', 'ETH', 'XRP']:
                 min_adx = 18
-            elif symbol == 'XAUUSDT':
+            elif coin_name == 'XAUUSD':
                 min_adx = 24
             else:
                 min_adx = 22
@@ -102,19 +109,15 @@ def check_live_signals():
             # BUY SIGNAL
             if (ema_20 > ema_50) and (ema_50 > prev_ema_50) and (close > ema_200) and (adx > min_adx):
                 if (prev_rsi <= 42) and (rsi > 42) and (vol >= 0.85 * vol_ma):
-                    sl = close - (1.4 * atr)
-                    tp = close + (3.5 * atr)
                     report_message += f"🟢 #{coin_name}: BUY SIGNAL! (${close:,.2f})\n"
-                    print(f"🔥 [BUY SIGNAL] {symbol} @ ${close:,.4f}")
+                    print(f"🔥 [BUY SIGNAL] {coin_name} @ ${close:,.4f}")
                     continue
 
             # SELL SIGNAL
             if (ema_20 < ema_50) and (ema_50 < prev_ema_50) and (close < ema_200) and (adx > min_adx):
                 if (prev_rsi >= 58) and (rsi < 58) and (vol >= 0.85 * vol_ma):
-                    sl = close + (1.4 * atr)
-                    tp = close - (3.5 * atr)
                     report_message += f"🔴 #{coin_name}: SELL SIGNAL! (${close:,.2f})\n"
-                    print(f"🔻 [SELL SIGNAL] {symbol} @ ${close:,.4f}")
+                    print(f"🔻 [SELL SIGNAL] {coin_name} @ ${close:,.4f}")
                     continue
 
             # NO SIGNAL
@@ -122,10 +125,9 @@ def check_live_signals():
             print(f"[{coin_name}] Status: No Signal | Price: ${close:,.2f}")
 
         except Exception as e:
-            print(f"⚠️ Error checking {symbol}: {e}")
-            report_message += f"⚠️ #{symbol.replace('USDT','')}: Error\n"
+            print(f"⚠️ Error checking {coin_name}: {e}")
+            report_message += f"⚠️ #{coin_name}: Error\n"
 
-    # Send 1 single summary report to WhatsApp every hour
     send_whatsapp_alert(report_message)
 
 if __name__ == "__main__":

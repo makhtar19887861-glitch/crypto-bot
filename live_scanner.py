@@ -1,4 +1,5 @@
 import os
+import datetime
 import pandas as pd
 import pandas_ta as ta
 import yfinance as yf
@@ -19,8 +20,11 @@ TWILIO_AUTH_TOKEN = os.getenv('TWILIO_AUTH_TOKEN')
 TWILIO_WHATSAPP_FROM = os.getenv('TWILIO_WHATSAPP_FROM', 'whatsapp:+14155238886')
 USER_WHATSAPP_TO = os.getenv('USER_WHATSAPP_TO')
 
+# File to track the last heartbeat timestamp
+HEARTBEAT_FILE = 'last_heartbeat.txt'
+
 def send_whatsapp_alert(message):
-    print(f"\n📢 SIGNAL ALERT:\n{message}\n")
+    print(f"\n📢 WHATSAPP MESSAGE:\n{message}\n")
     if TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN and USER_WHATSAPP_TO:
         try:
             client = Client(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
@@ -29,11 +33,34 @@ def send_whatsapp_alert(message):
                 from_=TWILIO_WHATSAPP_FROM,
                 to=USER_WHATSAPP_TO
             )
-            print("✅ WhatsApp Alert Sent Successfully!")
+            print("✅ WhatsApp Message Sent Successfully!")
         except Exception as e:
-            print(f"⚠️ Failed to send WhatsApp alert: {e}")
+            print(f"⚠️ Failed to send WhatsApp message: {e}")
     else:
         print("ℹ️ Twilio credentials not found. Running in local print-only mode.")
+
+def check_heartbeat():
+    """Checks if 12 hours have passed since the last status/heartbeat message."""
+    now = datetime.datetime.utcnow()
+    if os.path.exists(HEARTBEAT_FILE):
+        try:
+            with open(HEARTBEAT_FILE, 'r') as f:
+                last_time_str = f.read().strip()
+                last_time = datetime.datetime.fromisoformat(last_time_str)
+                # If less than 12 hours have passed, don't send heartbeat
+                if (now - last_time).total_seconds() < 12 * 3600:
+                    return False
+        except Exception:
+            pass
+    
+    # Update heartbeat file to current time
+    try:
+        with open(HEARTBEAT_FILE, 'w') as f:
+            f.write(now.isoformat())
+    except Exception as e:
+        print(f"⚠️ Could not write heartbeat file: {e}")
+        
+    return True
 
 def scan_markets():
     print("=" * 60)
@@ -41,6 +68,7 @@ def scan_markets():
     print("=" * 60)
 
     signals_found = 0
+    signal_messages = []
 
     for coin_name, ticker in ASSETS.items():
         try:
@@ -94,7 +122,7 @@ def scan_markets():
             vol = df.loc[i, 'volume']
             vol_ma = df.loc[i, 'Vol_MA']
 
-            # Flexible Crossover Check (Current or previous candle cross)
+            # Flexible Crossover Check
             cross_bullish_now = (df.loc[i-1, 'EMA_9'] <= df.loc[i-1, 'EMA_21']) and (ema_9 > ema_21)
             cross_bullish_prev = (df.loc[i-2, 'EMA_9'] <= df.loc[i-2, 'EMA_21']) and (df.loc[i-1, 'EMA_9'] > df.loc[i-1, 'EMA_21'])
             is_bullish_setup = (cross_bullish_now or cross_bullish_prev) and (ema_9 > ema_21)
@@ -104,7 +132,6 @@ def scan_markets():
             is_bearish_setup = (cross_bearish_now or cross_bearish_prev) and (ema_9 < ema_21)
 
             signal_type = None
-            # Relaxed filters: Volume >= 0.6*MA, RSI > 45 / < 55
             if is_bullish_setup and (close > ema_50) and (rsi > 45) and (vol >= 0.6 * vol_ma):
                 signal_type = 'BUY'
             elif is_bearish_setup and (close < ema_50) and (rsi < 55) and (vol >= 0.6 * vol_ma):
@@ -129,12 +156,28 @@ def scan_markets():
                     f"📊 RSI: `{rsi:.1f}` | ATR: `{atr:.4f}`\n"
                     f"⚡ Strategy: Flexible Smart Momentum"
                 )
-                send_whatsapp_alert(msg)
+                signal_messages.append(msg)
             else:
                 print(f"🔍 Asset: {coin_name:<6} | Status: No active signal on latest candle.")
 
         except Exception as e:
             print(f"⚠️ Error scanning {coin_name}: {e}")
+
+    # Send actual trade signals if any found
+    if signal_messages:
+        for msg in signal_messages:
+            send_whatsapp_alert(msg)
+    else:
+        # If no trade signals, check if 12 hours have passed for a heartbeat message
+        if check_heartbeat():
+            heartbeat_msg = (
+                f"🟢 *BOT HEALTH CHECK (12H)* 🟢\n"
+                f"🤖 Status: Bot is running smoothly and monitoring markets.\n"
+                f"📊 No active high-probability signals right now, keeping capital safe!"
+            )
+            send_whatsapp_alert(heartbeat_msg)
+        else:
+            print("ℹ️ No signals found and 12-hour heartbeat window not reached yet.")
 
     print("-" * 60)
     print(f"🏁 Scan Complete. Total Signals Generated: {signals_found}")

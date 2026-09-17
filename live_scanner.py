@@ -37,14 +37,13 @@ def send_whatsapp_alert(message):
 
 def scan_markets():
     print("=" * 60)
-    print("🚀 RUNNING LIVE SMART MOMENTUM SCANNER (15m)")
+    print("🚀 RUNNING FLEXIBLE SMART MOMENTUM SCANNER (15m)")
     print("=" * 60)
 
     signals_found = 0
 
     for coin_name, ticker in ASSETS.items():
         try:
-            # Fetch recent data to calculate indicators
             df = yf.download(ticker, period="5d", interval="15m", progress=False)
             if df.empty:
                 print(f"⚠️ No data fetched for {coin_name}")
@@ -85,24 +84,30 @@ def scan_markets():
             df['Vol_MA'] = ta.sma(df['volume'], length=20)
             df = df.dropna().reset_index(drop=True)
 
-            # Check the latest completed candle (Index -2 or -1 depending on execution, let's check index len-2)
             i = len(df) - 2
             close = df.loc[i, 'close']
-            ema_9, prev_ema_9 = df.loc[i, 'EMA_9'], df.loc[i-1, 'EMA_9']
-            ema_21, prev_ema_21 = df.loc[i, 'EMA_21'], df.loc[i-1, 'EMA_21']
+            ema_9 = df.loc[i, 'EMA_9']
+            ema_21 = df.loc[i, 'EMA_21']
             ema_50 = df.loc[i, 'EMA_50']
             rsi = df.loc[i, 'RSI_14']
             atr = df.loc[i, 'ATR_14']
             vol = df.loc[i, 'volume']
             vol_ma = df.loc[i, 'Vol_MA']
 
-            is_bullish_cross = (prev_ema_9 <= prev_ema_21) and (ema_9 > ema_21)
-            is_bearish_cross = (prev_ema_9 >= prev_ema_21) and (ema_9 < ema_21)
+            # Flexible Crossover Check (Current or previous candle cross)
+            cross_bullish_now = (df.loc[i-1, 'EMA_9'] <= df.loc[i-1, 'EMA_21']) and (ema_9 > ema_21)
+            cross_bullish_prev = (df.loc[i-2, 'EMA_9'] <= df.loc[i-2, 'EMA_21']) and (df.loc[i-1, 'EMA_9'] > df.loc[i-1, 'EMA_21'])
+            is_bullish_setup = (cross_bullish_now or cross_bullish_prev) and (ema_9 > ema_21)
+
+            cross_bearish_now = (df.loc[i-1, 'EMA_9'] >= df.loc[i-1, 'EMA_21']) and (ema_9 < ema_21)
+            cross_bearish_prev = (df.loc[i-2, 'EMA_9'] >= df.loc[i-2, 'EMA_21']) and (df.loc[i-1, 'EMA_9'] < df.loc[i-1, 'EMA_21'])
+            is_bearish_setup = (cross_bearish_now or cross_bearish_prev) and (ema_9 < ema_21)
 
             signal_type = None
-            if is_bullish_cross and (close > ema_50) and (rsi > 48) and (vol >= 0.8 * vol_ma):
+            # Relaxed filters: Volume >= 0.6*MA, RSI > 45 / < 55
+            if is_bullish_setup and (close > ema_50) and (rsi > 45) and (vol >= 0.6 * vol_ma):
                 signal_type = 'BUY'
-            elif is_bearish_cross and (close < ema_50) and (rsi < 52) and (vol >= 0.8 * vol_ma):
+            elif is_bearish_setup and (close < ema_50) and (rsi < 55) and (vol >= 0.6 * vol_ma):
                 signal_type = 'SELL'
 
             if signal_type:
@@ -122,7 +127,7 @@ def scan_markets():
                     f"🛑 Initial SL: `{sl:.4f}`\n"
                     f"🎯 Target Zone: `{tp_suggestion:.4f}`\n"
                     f"📊 RSI: `{rsi:.1f}` | ATR: `{atr:.4f}`\n"
-                    f"⚡ Strategy: Smart Momentum Trailing"
+                    f"⚡ Strategy: Flexible Smart Momentum"
                 )
                 send_whatsapp_alert(msg)
             else:
